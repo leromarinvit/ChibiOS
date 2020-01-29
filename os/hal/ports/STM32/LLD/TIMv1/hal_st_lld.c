@@ -38,7 +38,18 @@
 #define ST_ARR_INIT                         0x0000FFFFU
 #endif
 
-#if STM32_ST_USE_TIMER == 2
+#if STM32_ST_USE_RTC
+#if OSAL_ST_RESOLUTION != 32
+#error "ST resolution must be 32 bit when using RTC"
+#endif
+
+#define ST_CLOCK_SRC                        STM32_RTCCLK
+#define ST_HANDLER                          STM32_RTC1_HANDLER
+#define ST_NUMBER                           STM32_RTC1_NUMBER
+#define ST_ENABLE_CLOCK()
+#define ST_ENABLE_STOP()
+
+#elif STM32_ST_USE_TIMER == 2
 #if !STM32_HAS_TIM2
 #error "TIM2 not present in the selected device"
 #endif
@@ -184,7 +195,13 @@
 #error "the selected ST frequency is not obtainable because integer rounding"
 #endif
 
-#if (ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1 > 0xFFFF
+#if STM32_ST_USE_RTC
+#define ST_PRESCALER_MAX                    0xFFFFF
+#else
+#define ST_PRESCALER_MAX                    0xFFFF
+#endif
+
+#if (ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1 > ST_PRESCALER_MAX
 #error "the selected ST frequency is not obtainable because TIM timer prescaler limits"
 #endif
 
@@ -256,15 +273,26 @@ OSAL_IRQ_HANDLER(SysTick_Handler) {
  */
 OSAL_IRQ_HANDLER(ST_HANDLER) {
   uint32_t sr;
+#if !STM32_ST_USE_RTC
   stm32_tim_t *timp = STM32_ST_TIM;
+#endif
 
   OSAL_IRQ_PROLOGUE();
 
+#if STM32_ST_USE_RTC
+  sr  = RTC->CRL;
+  RTC->CRL = RTC_CRL_RSF;
+#else
   sr  = timp->SR;
   sr &= timp->DIER & STM32_TIM_DIER_IRQ_MASK;
   timp->SR = ~sr;
+#endif
 
+#if STM32_ST_USE_RTC
+  if ((sr & RTC_CRL_ALRF) != 0U) {
+#else
   if ((sr & TIM_SR_CC1IF) != 0U) {
+#endif
     osalSysLockFromISR();
     osalOsTimerHandlerI();
     osalSysUnlockFromISR();
@@ -316,6 +344,20 @@ void st_lld_init(void) {
   ST_ENABLE_STOP();
 
   /* Initializing the counter in free running mode.*/
+#if STM32_ST_USE_RTC
+  osalDbgAssert(__atomic_always_lock_free(sizeof RTC->CRL, &RTC->CRL), "need lock-free atoic compare-and-swap");
+  RTC->CRL &= ~RTC_CRL_RSF;
+  st_rtc_apb1_sync();
+  st_rtc_wait_write_completed();
+  RTC->CRH = 0;
+  bool locked = st_rtc_try_lock();
+  RTC->ALRH = 0;
+  RTC->ALRL = 0;
+  RTC->PRLH = ((ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1) << 16;
+  RTC->PRLL = ((ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1) & 0xFFFF;
+  if (locked)
+    st_rtc_unlock();
+#else
   STM32_ST_TIM->PSC    = (ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1;
   STM32_ST_TIM->ARR    = ST_ARR_INIT;
   STM32_ST_TIM->CCMR1  = 0;
@@ -333,6 +375,7 @@ void st_lld_init(void) {
   STM32_ST_TIM->CR2    = 0;
   STM32_ST_TIM->EGR    = TIM_EGR_UG;
   STM32_ST_TIM->CR1    = TIM_CR1_CEN;
+#endif
 
   /* IRQ enabled.*/
   nvicEnableVector(ST_NUMBER, STM32_ST_IRQ_PRIORITY);

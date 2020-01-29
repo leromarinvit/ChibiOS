@@ -53,13 +53,17 @@
 #define STM32_ST_IRQ_PRIORITY               8
 #endif
 
+#if !defined(STM32_ST_USE_RTC) || defined(__DOXYGEN__)
+#define STM32_ST_USR_RTC                    FALSE
+#endif
+
 /**
  * @brief   TIMx unit (by number) to be used for free running operations.
  * @note    You must select a 32 bits timer if a 32 bits @p systick_t type
  *          is required.
  * @note    Timers 2, 3, 4, 5, 21 and 22 are supported.
  */
-#if !defined(STM32_ST_USE_TIMER) || defined(__DOXYGEN__)
+#if !defined(STM32_ST_USE_TIMER) && !STM32_ST_USE_RTC || defined(__DOXYGEN__)
 #define STM32_ST_USE_TIMER                  2
 #endif
 /** @} */
@@ -92,7 +96,14 @@
 #define STM32_HAS_TIM22                     FALSE
 #endif
 
-#if STM32_ST_USE_TIMER == 2
+#if defined(STM32_ST_USE_TIMER) && STM32_ST_USE_RTC
+#error "cannot set STM32_ST_USE_TIMER and STM32_ST_USE_RTC at the same time"
+#endif
+
+#if STM32_ST_USE_RTC
+#define ST_LLD_NUM_ALARMS                   1
+
+#elif STM32_ST_USE_TIMER == 2
 #define STM32_ST_TIM                        STM32_TIM2
 #define ST_LLD_NUM_ALARMS                   STM32_TIM2_CHANNELS
 
@@ -154,6 +165,59 @@ extern "C" {
 /* Driver inline functions.                                                  */
 /*===========================================================================*/
 
+#if STM32_ST_USE_RTC
+/**
+ * @brief   Wait for synchronization of RTC registers with APB1 bus.
+ * @details This function must be invoked before trying to read RTC registers
+ *          in the backup domain: DIV, CNT, ALR. CR registers can always
+ *          be read.
+ *
+ * @notapi
+ */
+static inline void st_rtc_apb1_sync(void) {
+
+  while ((RTC->CRL & RTC_CRL_RSF) == 0)
+    ;
+}
+
+/**
+ * @brief   Wait for for previous write operation complete.
+ * @details This function must be invoked before writing to any RTC registers
+ *
+ * @notapi
+ */
+static inline void st_rtc_wait_write_completed(void) {
+
+  while ((RTC->CRL & RTC_CRL_RTOFF) == 0)
+    ;
+}
+
+/**
+ * @brief   Acquires write access to RTC registers.
+ * @details Before writing to the backup domain RTC registers the previous
+ *          write operation must be completed. Use this function before
+ *          writing to PRL, CNT, ALR registers.
+ *
+ * @notapi
+ */
+static inline bool st_rtc_try_lock(void) {
+
+  uint32_t expected = RTC_CRL_RSF | RTC_CRL_RTOFF;
+  st_rtc_wait_write_completed();
+  return __atomic_compare_exchange_n(&RTC->CRL, &expected, RTC_CRL_RSF | RTC_CRL_CNF, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
+/**
+ * @brief   Releases write access to RTC registers.
+ *
+ * @notapi
+ */
+static inline void st_rtc_unlock(void) {
+
+  RTC->CRL &= ~RTC_CRL_CNF;
+}
+#endif /* STM32_ST_USE_RTC */
+
 /**
  * @brief   Returns the time counter value.
  *
@@ -163,7 +227,17 @@ extern "C" {
  */
 static inline systime_t st_lld_get_counter(void) {
 
+#if STM32_ST_USE_RTC
+  systime_t cnt;
+  st_rtc_apb1_sync();
+  st_rtc_wait_write_completed();
+  do {
+    cnt = RTC->CNTH << 16 | RTC->CNTL;
+  } while (cnt != (RTC->CNTH << 16 | RTC->CNTL));
+  return cnt;
+#else
   return (systime_t)STM32_ST_TIM->CNT;
+#endif
 }
 
 /**
@@ -177,12 +251,21 @@ static inline systime_t st_lld_get_counter(void) {
  */
 static inline void st_lld_start_alarm(systime_t abstime) {
 
+#if STM32_ST_USE_RTC
+  bool locked = st_rtc_try_lock();
+  RTC->ALRH = abstime >> 16;
+  RTC->ALRL = abstime & 0xFFFF;
+  RTC->CRH |= RTC_CRH_ALRIE;
+  if (locked)
+    st_rtc_unlock();
+#else
   STM32_ST_TIM->CCR[0] = (uint32_t)abstime;
   STM32_ST_TIM->SR     = 0;
 #if ST_LLD_NUM_ALARMS == 1
   STM32_ST_TIM->DIER   = STM32_TIM_DIER_CC1IE;
 #else
   STM32_ST_TIM->DIER  |= STM32_TIM_DIER_CC1IE;
+#endif
 #endif
 }
 
@@ -193,10 +276,14 @@ static inline void st_lld_start_alarm(systime_t abstime) {
  */
 static inline void st_lld_stop_alarm(void) {
 
+#if STM32_ST_USE_RTC
+  RTC->CRH &= ~RTC_CRH_ALRIE;
+#else
 #if ST_LLD_NUM_ALARMS == 1
   STM32_ST_TIM->DIER = 0U;
 #else
  STM32_ST_TIM->DIER &= ~STM32_TIM_DIER_CC1IE;
+#endif
 #endif
 }
 
@@ -209,7 +296,17 @@ static inline void st_lld_stop_alarm(void) {
  */
 static inline void st_lld_set_alarm(systime_t abstime) {
 
+#if STM32_ST_USE_RTC
+  bool locked = st_rtc_try_lock();
+  do {
+    RTC->ALRH = abstime >> 16;
+    RTC->ALRL = abstime & 0xFFFF;
+  } while (RTC->ALRH != (uint32_t)abstime >> 16 || RTC->ALRL != (abstime & 0xFFFF));
+  if (locked)
+    st_rtc_unlock();
+#else
   STM32_ST_TIM->CCR[0] = (uint32_t)abstime;
+#endif
 }
 
 /**
@@ -221,7 +318,16 @@ static inline void st_lld_set_alarm(systime_t abstime) {
  */
 static inline systime_t st_lld_get_alarm(void) {
 
+#if STM32_ST_USE_RTC
+  systime_t alarm;
+  st_rtc_apb1_sync();
+  do {
+    alarm = RTC->ALRH << 16 | RTC->ALRL;
+  } while (alarm != (RTC->ALRH << 16 | RTC->ALRL));
+  return alarm;
+#else
   return (systime_t)STM32_ST_TIM->CCR[0];
+#endif
 }
 
 /**
@@ -235,7 +341,11 @@ static inline systime_t st_lld_get_alarm(void) {
  */
 static inline bool st_lld_is_alarm_active(void) {
 
+#if STM32_ST_USE_RTC
+  return (bool)((RTC->CRH & RTC_CRH_ALRIE) != 0);
+#else
   return (bool)((STM32_ST_TIM->DIER & STM32_TIM_DIER_CC1IE) != 0);
+#endif
 }
 
 #if (ST_LLD_NUM_ALARMS > 1) || defined(__DOXYGEN__)

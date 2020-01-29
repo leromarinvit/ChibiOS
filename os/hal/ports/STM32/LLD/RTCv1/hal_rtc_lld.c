@@ -149,6 +149,7 @@ static void rtc_decode(uint32_t tv_sec,
 /* Driver interrupt handlers.                                                */
 /*===========================================================================*/
 
+#if !STM32_ST_USE_RTC
 /**
  * @brief   RTC interrupt handler.
  *
@@ -178,6 +179,7 @@ OSAL_IRQ_HANDLER(STM32_RTC1_HANDLER) {
 
   OSAL_IRQ_EPILOGUE();
 }
+#endif
 
 /*===========================================================================*/
 /* Driver exported functions.                                                */
@@ -235,8 +237,10 @@ void rtc_lld_init(void) {
   /* Callback initially disabled.*/
   RTCD1.callback = NULL;
 
+#if !STM32_ST_USE_RTC
   /* IRQ vector permanently assigned to this driver.*/
   nvicEnableVector(STM32_RTC1_NUMBER, STM32_RTC_IRQ_PRIORITY);
+#endif
 }
 
 /**
