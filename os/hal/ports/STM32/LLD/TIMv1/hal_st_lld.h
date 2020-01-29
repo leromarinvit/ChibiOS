@@ -206,9 +206,19 @@ static inline void st_rtc_wait_write_completed(void) {
  */
 static inline bool st_rtc_try_lock(void) {
 
-  uint32_t expected = RTC_CRL_RSF | RTC_CRL_RTOFF;
+  const uint32_t idle = RTC_CRL_RSF | RTC_CRL_RTOFF;
+  const uint32_t config = RTC_CRL_RSF | RTC_CRL_CNF;
+  uint32_t expected = idle;
   st_rtc_wait_write_completed();
-  return atomic_compare_exchange_strong_explicit(&RTC->CRL, &expected, RTC_CRL_RSF | RTC_CRL_CNF, memory_order_relaxed, memory_order_relaxed);
+  if (atomic_compare_exchange_strong_explicit(&RTC->CRL, &expected, config, memory_order_relaxed, memory_order_relaxed))
+    return true;
+  for (;;) {
+    if (expected & RTC_CRL_CNF)
+      return false;
+    expected |= idle;
+    if (atomic_compare_exchange_strong_explicit(&RTC->CRL, &expected, expected | config, memory_order_relaxed, memory_order_relaxed))
+      return true;
+  }
 }
 
 /**
