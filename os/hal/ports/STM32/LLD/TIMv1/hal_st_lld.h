@@ -54,7 +54,11 @@
 #endif
 
 #if !defined(STM32_ST_USE_RTC) || defined(__DOXYGEN__)
-#define STM32_ST_USR_RTC                    FALSE
+#define STM32_ST_USE_RTC                    FALSE
+#endif
+
+#if STM32_ST_USE_RTC
+#include <stdatomic.h>
 #endif
 
 /**
@@ -204,7 +208,7 @@ static inline bool st_rtc_try_lock(void) {
 
   uint32_t expected = RTC_CRL_RSF | RTC_CRL_RTOFF;
   st_rtc_wait_write_completed();
-  return __atomic_compare_exchange_n(&RTC->CRL, &expected, RTC_CRL_RSF | RTC_CRL_CNF, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+  return atomic_compare_exchange_strong_explicit(&RTC->CRL, &expected, RTC_CRL_RSF | RTC_CRL_CNF, memory_order_relaxed, memory_order_relaxed);
 }
 
 /**

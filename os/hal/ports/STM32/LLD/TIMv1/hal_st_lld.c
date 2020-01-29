@@ -345,7 +345,7 @@ void st_lld_init(void) {
 
   /* Initializing the counter in free running mode.*/
 #if STM32_ST_USE_RTC
-  osalDbgAssert(__atomic_always_lock_free(sizeof RTC->CRL, &RTC->CRL), "need lock-free atoic compare-and-swap");
+  osalDbgAssert(atomic_is_lock_free(&RTC->CRL), "need lock-free atomic compare-and-swap");
   RTC->CRL &= ~RTC_CRL_RSF;
   st_rtc_apb1_sync();
   st_rtc_wait_write_completed();
