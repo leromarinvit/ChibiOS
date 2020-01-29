@@ -267,8 +267,10 @@ static inline void st_lld_start_alarm(systime_t abstime) {
 
 #if STM32_ST_USE_RTC
   bool locked = st_rtc_try_lock();
-  RTC->ALRH = abstime >> 16;
-  RTC->ALRL = abstime & 0xFFFF;
+  do {
+    RTC->ALRH = abstime >> 16;
+    RTC->ALRL = abstime & 0xFFFF;
+  } while (RTC->ALRH != (uint32_t)abstime >> 16 || RTC->ALRL != (abstime & 0xFFFF));
   RTC->CRH |= RTC_CRH_ALRIE;
   if (locked)
     st_rtc_unlock();
