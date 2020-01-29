@@ -264,7 +264,7 @@ OSAL_IRQ_HANDLER(SysTick_Handler) {
 }
 #endif /* OSAL_ST_MODE == OSAL_ST_MODE_PERIODIC */
 
-#if (OSAL_ST_MODE == OSAL_ST_MODE_FREERUNNING) || defined(__DOXYGEN__)
+#if (OSAL_ST_MODE == OSAL_ST_MODE_FREERUNNING && !STM32_ST_USE_RTC) || defined(__DOXYGEN__)
 /**
  * @brief   TIM2 interrupt handler.
  * @details This interrupt is used for system tick in free running mode.
@@ -273,26 +273,26 @@ OSAL_IRQ_HANDLER(SysTick_Handler) {
  */
 OSAL_IRQ_HANDLER(ST_HANDLER) {
   uint32_t sr;
-#if !STM32_ST_USE_RTC
+// #if !STM32_ST_USE_RTC
   stm32_tim_t *timp = STM32_ST_TIM;
-#endif
+// #endif
 
   OSAL_IRQ_PROLOGUE();
 
-#if STM32_ST_USE_RTC
-  sr  = RTC->CRL;
-  RTC->CRL = RTC_CRL_RSF;
-#else
+// #if STM32_ST_USE_RTC
+//   sr  = RTC->CRL;
+//   RTC->CRL = RTC_CRL_RSF;
+// #else
   sr  = timp->SR;
   sr &= timp->DIER & STM32_TIM_DIER_IRQ_MASK;
   timp->SR = ~sr;
-#endif
+// #endif
 
-#if STM32_ST_USE_RTC
-  if ((sr & RTC_CRL_ALRF) != 0U) {
-#else
+// #if STM32_ST_USE_RTC
+//   if ((sr & RTC_CRL_ALRF) != 0U) {
+// #else
   if ((sr & TIM_SR_CC1IF) != 0U) {
-#endif
+// #endif
     osalSysLockFromISR();
     osalOsTimerHandlerI();
     osalSysUnlockFromISR();
@@ -321,7 +321,7 @@ OSAL_IRQ_HANDLER(ST_HANDLER) {
 
   OSAL_IRQ_EPILOGUE();
 }
-#endif /* OSAL_ST_MODE == OSAL_ST_MODE_FREERUNNING */
+#endif /* OSAL_ST_MODE == OSAL_ST_MODE_FREERUNNING && !STM32_ST_USE_RTC */
 
 /*===========================================================================*/
 /* Driver exported functions.                                                */
@@ -334,7 +334,7 @@ OSAL_IRQ_HANDLER(ST_HANDLER) {
  */
 void st_lld_init(void) {
 
-#if OSAL_ST_MODE == OSAL_ST_MODE_FREERUNNING
+#if OSAL_ST_MODE == OSAL_ST_MODE_FREERUNNING && !STM32_ST_USE_RTC
   /* Free running counter mode.*/
 
   /* Enabling timer clock.*/
@@ -344,20 +344,20 @@ void st_lld_init(void) {
   ST_ENABLE_STOP();
 
   /* Initializing the counter in free running mode.*/
-#if STM32_ST_USE_RTC
-  osalDbgAssert(atomic_is_lock_free(&RTC->CRL), "need lock-free atomic compare-and-swap");
-  RTC->CRL &= ~RTC_CRL_RSF;
-  st_rtc_apb1_sync();
-  st_rtc_wait_write_completed();
-  RTC->CRH = 0;
-  bool locked = st_rtc_try_lock();
-  RTC->ALRH = 0;
-  RTC->ALRL = 0;
-  RTC->PRLH = ((ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1) << 16;
-  RTC->PRLL = ((ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1) & 0xFFFF;
-  if (locked)
-    st_rtc_unlock();
-#else
+// #if STM32_ST_USE_RTC
+//   osalDbgAssert(atomic_is_lock_free(&RTC->CRL), "need lock-free atomic compare-and-swap");
+//   RTC->CRL &= ~RTC_CRL_RSF;
+//   st_rtc_apb1_sync();
+//   st_rtc_wait_write_completed();
+//   RTC->CRH = 0;
+//   bool locked = st_rtc_try_lock();
+//   RTC->ALRH = 0;
+//   RTC->ALRL = 0;
+//   RTC->PRLH = ((ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1) << 16;
+//   RTC->PRLL = ((ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1) & 0xFFFF;
+//   if (locked)
+//     st_rtc_unlock();
+// #else
   STM32_ST_TIM->PSC    = (ST_CLOCK_SRC / OSAL_ST_FREQUENCY) - 1;
   STM32_ST_TIM->ARR    = ST_ARR_INIT;
   STM32_ST_TIM->CCMR1  = 0;
@@ -375,11 +375,11 @@ void st_lld_init(void) {
   STM32_ST_TIM->CR2    = 0;
   STM32_ST_TIM->EGR    = TIM_EGR_UG;
   STM32_ST_TIM->CR1    = TIM_CR1_CEN;
-#endif
+// #endif
 
   /* IRQ enabled.*/
   nvicEnableVector(ST_NUMBER, STM32_ST_IRQ_PRIORITY);
-#endif /* OSAL_ST_MODE == OSAL_ST_MODE_FREERUNNING */
+#endif /* OSAL_ST_MODE == OSAL_ST_MODE_FREERUNNING && !STM32_ST_USE_RTC */
 
 #if OSAL_ST_MODE == OSAL_ST_MODE_PERIODIC
   /* Periodic systick mode, the Cortex-Mx internal systick timer is used

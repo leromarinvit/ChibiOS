@@ -47,6 +47,14 @@ RTCDriver RTCD1;
 /* Driver local variables and types.                                         */
 /*===========================================================================*/
 
+#if STM32_ST_USE_RTC
+static const uint16_t psc_high = ((STM32_RTCCLK / OSAL_ST_FREQUENCY - 1) >> 16) & 0x000F;
+static const uint16_t psc_low  = ((STM32_RTCCLK / OSAL_ST_FREQUENCY - 1))       & 0xFFFF;
+#else
+static const uint16_t psc_high = ((STM32_RTCCLK - 1) >> 16) & 0x000F;
+static const uint16_t psc_low  = ((STM32_RTCCLK - 1))       & 0xFFFF;
+#endif
+
 /*===========================================================================*/
 /* Driver local functions.                                                   */
 /*===========================================================================*/
@@ -202,8 +210,8 @@ void rtc_lld_set_prescaler(void) {
   sts = osalSysGetStatusAndLockX();
 
   rtc_acquire_access();
-  RTC->PRLH = (uint16_t)((STM32_RTCCLK - 1) >> 16) & 0x000F;
-  RTC->PRLL = (uint16_t)(((STM32_RTCCLK - 1))      & 0xFFFF);
+  RTC->PRLH = psc_high;
+  RTC->PRLL = psc_low;
   rtc_release_access();
 
   /* Leaving a reentrant critical zone.*/
@@ -237,10 +245,22 @@ void rtc_lld_init(void) {
   /* Callback initially disabled.*/
   RTCD1.callback = NULL;
 
-#if !STM32_ST_USE_RTC
+  /* When switching between normal RTC operation and ST mode, the prescaler
+     needs to be changed. */
+  if (RTCD1.rtc->PRLH != psc_high || RTCD1.rtc->PRLL != psc_low)
+    rtc_lld_set_prescaler();
+
+#if STM32_ST_USE_RTC
+  /* We want to avoid locking in ST inline functions. */
+  osalDbgAssert(atomic_is_lock_free(&RTC->CRL), "need lock-free atomic access to RTC_CRL");
+
+  rtc_acquire_access();
+#endif
+
+// #if !STM32_ST_USE_RTC
   /* IRQ vector permanently assigned to this driver.*/
   nvicEnableVector(STM32_RTC1_NUMBER, STM32_RTC_IRQ_PRIORITY);
-#endif
+// #endif
 }
 
 /**

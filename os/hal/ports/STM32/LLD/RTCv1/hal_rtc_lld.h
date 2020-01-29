@@ -31,6 +31,8 @@
 
 #if HAL_USE_RTC || defined(__DOXYGEN__)
 
+#include "hal_st.h"
+
 /*===========================================================================*/
 /* Driver constants.                                                         */
 /*===========================================================================*/
@@ -65,7 +67,11 @@
 /*
  * RTC driver system settings.
  */
+#if !STM32_ST_USE_RTC || defined(__DOXYGEN__)
 #define STM32_RTC_IRQ_PRIORITY      15
+#else
+#define STM32_RTC_IRQ_PRIORITY      STM32_ST_IRQ_PRIORITY
+#endif
 /** @} */
 
 /*===========================================================================*/
