@@ -153,6 +153,21 @@
 /* Driver macros.                                                            */
 /*===========================================================================*/
 
+#define st_rtc_read_2x16(high, low) ({ \
+  uint32_t _val; \
+  do { \
+    _val = (high) << 16 | (low); \
+  } while (_val != ((high) << 16 | (low))); \
+  _val; \
+})
+
+#define st_rtc_write_2x16(high, low, value) ({ \
+  do { \
+    (high) = (value) >> 16; \
+    (low) = (value) & 0xFFFF; \
+  } while ((high) != ((value) >> 16) || (low) != ((value) & 0xFFFF)); \
+})
+
 /*===========================================================================*/
 /* External declarations.                                                    */
 /*===========================================================================*/
@@ -242,13 +257,9 @@ static inline void st_rtc_unlock(void) {
 static inline systime_t st_lld_get_counter(void) {
 
 #if STM32_ST_USE_RTC
-  systime_t cnt;
   st_rtc_apb1_sync();
   st_rtc_wait_write_completed();
-  do {
-    cnt = RTC->CNTH << 16 | RTC->CNTL;
-  } while (cnt != (RTC->CNTH << 16 | RTC->CNTL));
-  return cnt;
+  return st_rtc_read_2x16(RTC->CNTH, RTC->CNTL);
 #else
   return (systime_t)STM32_ST_TIM->CNT;
 #endif
@@ -267,10 +278,7 @@ static inline void st_lld_start_alarm(systime_t abstime) {
 
 #if STM32_ST_USE_RTC
   bool locked = st_rtc_try_lock();
-  do {
-    RTC->ALRH = abstime >> 16;
-    RTC->ALRL = abstime & 0xFFFF;
-  } while (RTC->ALRH != (uint32_t)abstime >> 16 || RTC->ALRL != (abstime & 0xFFFF));
+  st_rtc_write_2x16(RTC->ALRH, RTC->ALRL, abstime);
   RTC->CRH |= RTC_CRH_ALRIE;
   if (locked)
     st_rtc_unlock();
@@ -314,10 +322,7 @@ static inline void st_lld_set_alarm(systime_t abstime) {
 
 #if STM32_ST_USE_RTC
   bool locked = st_rtc_try_lock();
-  do {
-    RTC->ALRH = abstime >> 16;
-    RTC->ALRL = abstime & 0xFFFF;
-  } while (RTC->ALRH != (uint32_t)abstime >> 16 || RTC->ALRL != (abstime & 0xFFFF));
+  st_rtc_write_2x16(RTC->ALRH, RTC->ALRL, abstime);
   if (locked)
     st_rtc_unlock();
 #else
@@ -335,12 +340,8 @@ static inline void st_lld_set_alarm(systime_t abstime) {
 static inline systime_t st_lld_get_alarm(void) {
 
 #if STM32_ST_USE_RTC
-  systime_t alarm;
   st_rtc_apb1_sync();
-  do {
-    alarm = RTC->ALRH << 16 | RTC->ALRL;
-  } while (alarm != (RTC->ALRH << 16 | RTC->ALRL));
-  return alarm;
+  return st_rtc_read_2x16(RTC->ALRH, RTC->ALRL);
 #else
   return (systime_t)STM32_ST_TIM->CCR[0];
 #endif
