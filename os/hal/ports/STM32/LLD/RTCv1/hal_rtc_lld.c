@@ -34,6 +34,15 @@
 /* Driver local definitions.                                                 */
 /*===========================================================================*/
 
+#if STM32_ST_USE_RTC
+#define RTC_PRESCALER       (STM32_RTCCLK / OSAL_ST_FREQUENCY - 1)
+#else
+#define RTC_PRESCALER       (STM32_RTCCLK - 1)
+#endif
+
+#define RTC_PRESCALER_HIGH  ((RTC_PRESCALER >> 16) & 0x000F)
+#define RTC_PRESCALER_LOW   ((RTC_PRESCALER)       & 0xFFFF)
+
 /*===========================================================================*/
 /* Driver exported variables.                                                */
 /*===========================================================================*/
@@ -46,14 +55,6 @@ RTCDriver RTCD1;
 /*===========================================================================*/
 /* Driver local variables and types.                                         */
 /*===========================================================================*/
-
-#if STM32_ST_USE_RTC
-static const uint16_t psc_high = ((STM32_RTCCLK / OSAL_ST_FREQUENCY - 1) >> 16) & 0x000F;
-static const uint16_t psc_low  = ((STM32_RTCCLK / OSAL_ST_FREQUENCY - 1))       & 0xFFFF;
-#else
-static const uint16_t psc_high = ((STM32_RTCCLK - 1) >> 16) & 0x000F;
-static const uint16_t psc_low  = ((STM32_RTCCLK - 1))       & 0xFFFF;
-#endif
 
 /*===========================================================================*/
 /* Driver local functions.                                                   */
@@ -157,7 +158,6 @@ static void rtc_decode(uint32_t tv_sec,
 /* Driver interrupt handlers.                                                */
 /*===========================================================================*/
 
-#if !STM32_ST_USE_RTC
 /**
  * @brief   RTC interrupt handler.
  *
@@ -176,6 +176,13 @@ OSAL_IRQ_HANDLER(STM32_RTC1_HANDLER) {
   flags = RTCD1.rtc->CRH & RTCD1.rtc->CRL;
   RTCD1.rtc->CRL &= ~(RTC_CRL_SECF | RTC_CRL_ALRF | RTC_CRL_OWF);
 
+#if STM32_ST_USE_RTC
+  if (flags & RTC_CRL_ALRF) {
+    osalSysLockFromISR();
+    osalOsTimerHandlerI();
+    osalSysUnlockFromISR();
+  }
+#else
   if (flags & RTC_CRL_SECF)
     RTCD1.callback(&RTCD1, RTC_EVENT_SECOND);
 
@@ -184,10 +191,10 @@ OSAL_IRQ_HANDLER(STM32_RTC1_HANDLER) {
 
   if (flags & RTC_CRL_OWF)
     RTCD1.callback(&RTCD1, RTC_EVENT_OVERFLOW);
+#endif
 
   OSAL_IRQ_EPILOGUE();
 }
-#endif
 
 /*===========================================================================*/
 /* Driver exported functions.                                                */
@@ -210,8 +217,8 @@ void rtc_lld_set_prescaler(void) {
   sts = osalSysGetStatusAndLockX();
 
   rtc_acquire_access();
-  RTC->PRLH = psc_high;
-  RTC->PRLL = psc_low;
+  RTC->PRLH = RTC_PRESCALER_HIGH;
+  RTC->PRLL = RTC_PRESCALER_LOW;
   rtc_release_access();
 
   /* Leaving a reentrant critical zone.*/
@@ -224,6 +231,14 @@ void rtc_lld_set_prescaler(void) {
  * @notapi
  */
 void rtc_lld_init(void) {
+
+#if STM32_ST_USE_RTC
+  uint32_t old_psc;
+  uint64_t alarm;
+
+  /* We want to avoid locking in ST inline functions. */
+  osalDbgAssert(atomic_is_lock_free(&RTC->CRL), "need lock-free atomic access to RTC_CRL");
+#endif
 
   /* RTC object initialization.*/
   rtcObjectInit(&RTCD1);
@@ -247,20 +262,20 @@ void rtc_lld_init(void) {
 
   /* When switching between normal RTC operation and ST mode, the prescaler
      needs to be changed. */
-  if (RTCD1.rtc->PRLH != psc_high || RTCD1.rtc->PRLL != psc_low)
-    rtc_lld_set_prescaler();
-
+  if (RTCD1.rtc->PRLH != RTC_PRESCALER_HIGH || RTCD1.rtc->PRLL != RTC_PRESCALER_LOW) {
 #if STM32_ST_USE_RTC
-  /* We want to avoid locking in ST inline functions. */
-  osalDbgAssert(atomic_is_lock_free(&RTC->CRL), "need lock-free atomic access to RTC_CRL");
-
-  rtc_acquire_access();
+    old_psc = st_rtc_read_2x16(RTCD1.rtc->PRLH, RTCD1.rtc->PRLL);
+    alarm = st_rtc_read_2x16(RTCD1.rtc->ALRH, RTCD1.rtc->ALRL);
+    alarm = alarm * old_psc / RTC_PRESCALER;
+    if (alarm > UINT32_MAX)
+      alarm = 0;
+    st_lld_set_alarm((systime_t)alarm);
 #endif
+    rtc_lld_set_prescaler();
+  }
 
-// #if !STM32_ST_USE_RTC
   /* IRQ vector permanently assigned to this driver.*/
   nvicEnableVector(STM32_RTC1_NUMBER, STM32_RTC_IRQ_PRIORITY);
-// #endif
 }
 
 /**
