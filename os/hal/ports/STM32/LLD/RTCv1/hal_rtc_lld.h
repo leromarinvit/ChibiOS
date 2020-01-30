@@ -67,9 +67,10 @@
 /*
  * RTC driver system settings.
  */
-#if !STM32_ST_USE_RTC || defined(__DOXYGEN__)
+#if !STM32_ST_USE_RTC && !defined(STM32_RTC_IRQ_PRIORITY) || defined(__DOXYGEN__)
 #define STM32_RTC_IRQ_PRIORITY      15
 #else
+#undef STM32_RTC_IRQ_PRIORITY
 #define STM32_RTC_IRQ_PRIORITY      STM32_ST_IRQ_PRIORITY
 #endif
 /** @} */
