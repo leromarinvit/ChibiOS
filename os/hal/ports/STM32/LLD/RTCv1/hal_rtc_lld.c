@@ -56,6 +56,11 @@ RTCDriver RTCD1;
 /* Driver local variables and types.                                         */
 /*===========================================================================*/
 
+#if STM32_ST_USE_RTC
+uint32_t offset_seconds;
+uint32_t offset_div;
+#endif
+
 /*===========================================================================*/
 /* Driver local functions.                                                   */
 /*===========================================================================*/
@@ -264,12 +269,16 @@ void rtc_lld_init(void) {
      needs to be changed. */
   if (RTCD1.rtc->PRLH != RTC_PRESCALER_HIGH || RTCD1.rtc->PRLL != RTC_PRESCALER_LOW) {
 #if STM32_ST_USE_RTC
+    /* Scale existing alarm when switching from normal to ST mode. */
     old_psc = st_rtc_read_2x16(RTCD1.rtc->PRLH, RTCD1.rtc->PRLL);
     alarm = st_rtc_read_2x16(RTCD1.rtc->ALRH, RTCD1.rtc->ALRL);
     alarm = alarm * old_psc / RTC_PRESCALER;
     if (alarm > UINT32_MAX)
       alarm = 0;
     st_lld_set_alarm((systime_t)alarm);
+#else
+    /* Discard alarm when going from ST mode to normal operation. */
+    rtc_lld_set_alarm(&RTCD1, 0, NULL);
 #endif
     rtc_lld_set_prescaler();
   }
@@ -433,6 +442,25 @@ void rtcSTM32GetSecMsec(RTCDriver *rtcp, uint32_t *tv_sec, uint32_t *tv_msec) {
 
   osalDbgCheck((NULL != tv_sec) && (NULL != rtcp));
 
+#if STM32_ST_USE_RTC
+  /* Entering a reentrant critical zone.*/
+  sts = osalSysGetStatusAndLockX();
+
+  uint32_t sec = offset_seconds;
+  uint32_t o_div = offset_div;
+
+  /* Leaving a reentrant critical zone.*/
+  osalSysRestoreStatusX(sts);
+
+  uint32_t cnt, div;
+
+  do {
+    cnt = st_lld_get_counter();
+    div = st_rtc_read_2x16(rtcp->rtc->DIVH, rtcp->rtc->DIVL);
+  } while (cnt != st_lld_get_counter() || div != st_rtc_read_2x16(rtcp->rtc->DIVH, rtcp->rtc->DIVL));
+
+  sec += cnt / OSAL_ST_FREQUENCY;
+#else
   /* Entering a reentrant critical zone.*/
   sts = osalSysGetStatusAndLockX();
 
@@ -450,6 +478,7 @@ void rtcSTM32GetSecMsec(RTCDriver *rtcp, uint32_t *tv_sec, uint32_t *tv_msec) {
 
   /* Leaving a reentrant critical zone.*/
   osalSysRestoreStatusX(sts);
+#endif
 
   if (NULL != tv_msec)
     *tv_msec = (((uint32_t)STM32_RTCCLK - 1 - time_frac) * 1000) / STM32_RTCCLK;
@@ -469,6 +498,22 @@ void rtcSTM32SetSec(RTCDriver *rtcp, uint32_t tv_sec) {
 
   osalDbgCheck(NULL != rtcp);
 
+#if STM32_ST_USE_RTC
+  uint32_t sec, div;
+
+  do {
+    sec = st_lld_get_counter();
+    div = st_rtc_read_2x16(rtcp->rtc->DIVH, rtcp->rtc->DIVL);
+  } while (sec != st_lld_get_counter() || div != st_rtc_read_2x16(rtcp->rtc->DIVH, rtcp->rtc->DIVL));
+
+  sec = tv_sec - sec / OSAL_ST_FREQUENCY;
+
+  /* Entering a reentrant critical zone.*/
+  sts = osalSysGetStatusAndLockX();
+
+  offset_seconds = sec;
+  offset_div = div;
+#else
   /* Entering a reentrant critical zone.*/
   sts = osalSysGetStatusAndLockX();
 
@@ -476,6 +521,7 @@ void rtcSTM32SetSec(RTCDriver *rtcp, uint32_t tv_sec) {
   rtcp->rtc->CNTH = (uint16_t)(tv_sec >> 16);
   rtcp->rtc->CNTL = (uint16_t)(tv_sec & 0xFFFF);
   rtc_release_access();
+#endif
 
   /* Leaving a reentrant critical zone.*/
   osalSysRestoreStatusX(sts);

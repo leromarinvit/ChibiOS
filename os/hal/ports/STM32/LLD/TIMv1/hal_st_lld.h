@@ -224,6 +224,7 @@ static inline bool st_rtc_try_lock(void) {
   const uint32_t idle = RTC_CRL_RSF | RTC_CRL_RTOFF;
   const uint32_t config = RTC_CRL_RSF | RTC_CRL_CNF;
   uint32_t expected = idle;
+  st_rtc_apb1_sync();
   st_rtc_wait_write_completed();
   if (atomic_compare_exchange_strong_explicit(&RTC->CRL, &expected, config, memory_order_relaxed, memory_order_relaxed))
     return true;
@@ -258,7 +259,7 @@ static inline systime_t st_lld_get_counter(void) {
 
 #if STM32_ST_USE_RTC
   st_rtc_apb1_sync();
-  st_rtc_wait_write_completed();
+  // st_rtc_wait_write_completed();
   return st_rtc_read_2x16(RTC->CNTH, RTC->CNTL);
 #else
   return (systime_t)STM32_ST_TIM->CNT;
