@@ -248,9 +248,6 @@ void rtc_lld_set_prescaler(void) {
 void rtc_lld_init(void) {
 
 #if STM32_ST_USE_RTC
-  uint32_t old_psc;
-  uint64_t alarm;
-
   /* We want to avoid locking in ST inline functions. */
   osalDbgAssert(atomic_is_lock_free(&RTC->CRL), "need lock-free atomic access to RTC_CRL");
 #endif
@@ -274,24 +271,6 @@ void rtc_lld_init(void) {
 
   /* Callback initially disabled.*/
   RTCD1.callback = NULL;
-
-  /* When switching between normal RTC operation and ST mode, the prescaler
-     needs to be changed. */
-  if (RTCD1.rtc->PRLH != RTC_PRESCALER_HIGH || RTCD1.rtc->PRLL != RTC_PRESCALER_LOW) {
-#if STM32_ST_USE_RTC
-    /* Scale existing alarm when switching from normal to ST mode. */
-    old_psc = st_rtc_read_2x16(RTCD1.rtc->PRLH, RTCD1.rtc->PRLL);
-    alarm = st_rtc_read_2x16(RTCD1.rtc->ALRH, RTCD1.rtc->ALRL);
-    alarm = alarm * old_psc / RTC_PRESCALER;
-    if (alarm > UINT32_MAX)
-      alarm = 0;
-    st_lld_set_alarm((systime_t)alarm);
-#else
-    /* Discard alarm when going from ST mode to normal operation. */
-    rtc_lld_set_alarm(&RTCD1, 0, NULL);
-#endif
-    rtc_lld_set_prescaler();
-  }
 
   /* IRQ vector permanently assigned to this driver.*/
   nvicEnableVector(STM32_RTC1_NUMBER, STM32_RTC_IRQ_PRIORITY);
