@@ -155,17 +155,20 @@
 
 #define st_rtc_read_2x16(high, low) ({ \
   uint32_t _val; \
+  typeof(high) _high = (high); \
+  typeof(low) _low = (low); \
   do { \
-    _val = (high) << 16 | (low); \
-  } while (_val != ((high) << 16 | (low))); \
+    _val = _high << 16 | _low; \
+  } while (_val != (_high << 16 | _low)); \
   _val; \
 })
 
 #define st_rtc_write_2x16(high, low, value) ({ \
+  typeof(value) _val = (value); \
   do { \
-    (high) = (value) >> 16; \
-    (low) = (value) & 0xFFFF; \
-  } while ((high) != ((value) >> 16) || (low) != ((value) & 0xFFFF)); \
+    (high) = _val >> 16; \
+    (low) = _val & 0xFFFF; \
+  } while ((high) != (_val >> 16) || (low) != (_val & 0xFFFF)); \
 })
 
 /*===========================================================================*/
