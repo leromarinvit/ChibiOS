@@ -57,8 +57,12 @@ RTCDriver RTCD1;
 /*===========================================================================*/
 
 #if STM32_ST_USE_RTC
-uint32_t offset_seconds;
-int32_t offset_div;
+static uint32_t offset_seconds;
+static int32_t  offset_div;
+
+static RTCAlarm alarm_time;
+static uint32_t alarm_ticks;
+static bool     alarm_armed;
 #endif
 
 /*===========================================================================*/
@@ -182,11 +186,37 @@ OSAL_IRQ_HANDLER(STM32_RTC1_HANDLER) {
   RTCD1.rtc->CRL &= ~(RTC_CRL_SECF | RTC_CRL_ALRF | RTC_CRL_OWF);
 
 #if STM32_ST_USE_RTC
+  uint32_t next_rollover = offset_seconds + 0x100000000LL / OSAL_ST_FREQUENCY;
+  static bool overflow_fired;
+
+  /* Epoch overflow within this RTC period? */
+  if (next_rollover < offset_seconds) {
+    if (RTCD1.callback != NULL && !overflow_fired) {
+      uint32_t sec;
+      rtcSTM32GetSecMsec(&RTCD1, &sec, NULL);
+      if (sec < offset_seconds)
+        RTCD1.callback(&RTCD1, RTC_EVENT_OVERFLOW);
+    }
+    overflow_fired = true;
+  } else {
+    overflow_fired = false;
+  }
+
+  /* Systick alarm and possibly RTC alarm.*/
   if (flags & RTC_CRL_ALRF) {
+    if (alarm_armed && st_lld_get_counter() >= alarm_ticks) {
+      alarm_armed = false;
+      alarm_ticks = 0;
+      if (RTCD1.callback != NULL)
+        RTCD1.callback(&RTCD1, RTC_EVENT_ALARM);
+    }
+
     osalSysLockFromISR();
     osalOsTimerHandlerI();
     osalSysUnlockFromISR();
   }
+
+  /* Systick overflow - adjust RTC offset.*/
   if (flags & RTC_CRL_OWF) {
     osalSysLockFromISR();
     offset_seconds += 0x100000000LL / OSAL_ST_FREQUENCY;
@@ -265,9 +295,14 @@ void rtc_lld_init(void) {
   /* Required because access to PRL.*/
   rtc_apb1_sync();
 
-  /* All interrupts initially disabled.*/
   rtc_wait_write_completed();
+#if STM32_ST_USE_RTC
+  /* Only overflow interrupt initially enabled.*/
+  RTCD1.rtc->CRH = RTC_CRH_OWIE;
+#else
+  /* All interrupts initially disabled.*/
   RTCD1.rtc->CRH = 0;
+#endif
 
   /* Callback initially disabled.*/
   RTCD1.callback = NULL;
@@ -327,6 +362,57 @@ void rtc_lld_set_alarm(RTCDriver *rtcp,
   syssts_t sts;
   (void)alarm_number;
 
+#if STM32_ST_USE_RTC
+  (void)rtcp;
+
+  uint32_t next_rollover;
+  uint32_t cnt, alarm;
+
+  /* Disable any previously armed alarm.*/
+  alarm_ticks = 0;
+  alarm_armed = false;
+
+  if (alarmspec == NULL) {
+    alarm_time = (RTCAlarm){};
+    return;
+  }
+  alarm_time = *alarmspec;
+
+  if (alarm_time.tv_sec == 0)
+    return;
+
+  sts = osalSysGetStatusAndLockX();
+
+  next_rollover = offset_seconds + 0x100000000LL / OSAL_ST_FREQUENCY;
+
+  /* If the alarm is after the next RTC rollover, we can't set an alarm yet.*/
+  if (alarm_time.tv_sec > next_rollover)
+    goto out;
+
+  cnt = st_lld_get_counter();
+  alarm = cnt + (alarm_time.tv_sec - offset_seconds) * OSAL_ST_FREQUENCY;
+  if (offset_div > 0)
+    alarm++;
+
+  /* If the alarm is between the next rollover and the first second boundary
+     after it (so the addition overflowed), we can't set an alarm either.*/
+  if (alarm < cnt)
+    goto out;
+
+  /* Now we know that the alarm must fire within this RTC period.*/
+  alarm_ticks = alarm;
+  alarm_armed = true;
+
+  /* If an earlier alarm is already set, don't change it.*/
+  if (st_lld_is_alarm_active() && st_lld_get_alarm() <= alarm)
+    goto out;
+
+  st_lld_start_alarm(alarm);
+
+out:
+  osalSysRestoreStatusX(sts);
+#else
+
   /* Entering a reentrant critical zone.*/
   sts = osalSysGetStatusAndLockX();
 
@@ -343,6 +429,7 @@ void rtc_lld_set_alarm(RTCDriver *rtcp,
 
   /* Leaving a reentrant critical zone.*/
   osalSysRestoreStatusX(sts);
+#endif
 }
 
 /**
@@ -361,8 +448,13 @@ void rtc_lld_set_alarm(RTCDriver *rtcp,
 void rtc_lld_get_alarm(RTCDriver *rtcp,
                        rtcalarm_t alarm_number,
                        RTCAlarm *alarmspec) {
-  syssts_t sts;
   (void)alarm_number;
+#if STM32_ST_USE_RTC
+  (void)rtcp;
+  if (alarmspec)
+    *alarmspec = alarm_time;
+#else
+  syssts_t sts;
 
   /* Entering a reentrant critical zone.*/
   sts = osalSysGetStatusAndLockX();
@@ -374,6 +466,7 @@ void rtc_lld_get_alarm(RTCDriver *rtcp,
 
   /* Leaving a reentrant critical zone.*/
   osalSysRestoreStatusX(sts);
+#endif
 }
 
 /**
@@ -388,6 +481,9 @@ void rtc_lld_get_alarm(RTCDriver *rtcp,
  * @notapi
  */
 void rtc_lld_set_callback(RTCDriver *rtcp, rtccb_t callback) {
+#if STM32_ST_USE_RTC
+  rtcp->callback = callback;
+#else
   syssts_t sts;
 
   /* Entering a reentrant critical zone.*/
@@ -412,6 +508,7 @@ void rtc_lld_set_callback(RTCDriver *rtcp, rtccb_t callback) {
 
   /* Leaving a reentrant critical zone.*/
   osalSysRestoreStatusX(sts);
+#endif
 }
 
 /**
