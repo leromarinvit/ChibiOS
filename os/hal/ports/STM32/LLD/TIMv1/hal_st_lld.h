@@ -31,8 +31,6 @@
 #include "stm32_registry.h"
 #include "stm32_tim.h"
 
-#include "lockless_log.h"
-
 /*===========================================================================*/
 /* Driver constants.                                                         */
 /*===========================================================================*/
@@ -167,13 +165,10 @@
 
 #define st_rtc_write_2x16(high, low, value) ({ \
   typeof(value) _val = (value); \
-  /* int _i = 0; */ \
   do { \
     (high) = _val >> 16; \
     (low) = _val & 0xFFFF; \
-    /* _i++; */ \
-  } while (((high) != (typeof(high))(_val >> 16) || (low) != (typeof(low))(_val & 0xFFFF)) && _debug("failed to write " #high "=%x, " #low "=%x - read back " #high "=%x, " #low "=%x", _val >> 16, _val & 0xFFFF, (high), (low))); \
-  /* _debug(#high "=%x, " #low "=%x written %d times", (high), (low), _i); */ \
+  } while ((high) != (typeof(high))(_val >> 16) || (low) != (typeof(low))(_val & 0xFFFF)); \
 })
 
 /*===========================================================================*/

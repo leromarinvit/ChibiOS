@@ -27,7 +27,6 @@
  */
 
 #include "hal.h"
-#include "log.h"
 
 #if HAL_USE_RTC || defined(__DOXYGEN__)
 
@@ -62,12 +61,10 @@ static uint32_t offset_seconds;
 static int32_t  offset_div;
 
 static RTCAlarm alarm_time;
+static bool     alarm_set;
 
 static virtual_timer_t tim_alarm;
 static virtual_timer_t tim_overflow;
-
-// static uint32_t alarm_ticks;
-// static bool     alarm_armed;
 #endif
 
 /*===========================================================================*/
@@ -171,12 +168,15 @@ static void rtc_decode(uint32_t tv_sec,
 #if STM32_ST_USE_RTC
 static void overflow_handler(void *p) {
   RTCDriver *rtc = (RTCDriver *)p;
+
   if (rtc->callback != NULL)
     rtc->callback(rtc, RTC_EVENT_OVERFLOW);
 }
 
 static void alarm_handler(void *p) {
   RTCDriver *rtc = (RTCDriver *)p;
+
+  alarm_set = false;
   if (rtc->callback != NULL)
     rtc->callback(rtc, RTC_EVENT_ALARM);
 }
@@ -205,75 +205,48 @@ OSAL_IRQ_HANDLER(STM32_RTC1_HANDLER) {
   RTCD1.rtc->CRL &= ~(RTC_CRL_SECF | RTC_CRL_ALRF | RTC_CRL_OWF);
 
 #if STM32_ST_USE_RTC
+  osalSysLockFromISR();
+
   systime_t cnt = st_lld_get_counter();
-  if ((int32_t)-offset_seconds < 0x100000000LL / OSAL_ST_FREQUENCY && RTCD1.callback != NULL) {
+
+  /* Epoch overflow within this RTC period? */
+  if ((int32_t)-offset_seconds < 0x100000000LL / OSAL_ST_FREQUENCY) {
     systime_t alarm = (int32_t)-offset_seconds * OSAL_ST_FREQUENCY;
-    if (alarm > cnt) {
-      osalSysLockFromISR();
-      if (!chVTIsArmedI(&tim_overflow))
-        chVTSetI(&tim_overflow, osalTimeDiffX(cnt, alarm), overflow_handler, &RTCD1);
-      osalSysUnlockFromISR();
-    }
+    alarm += offset_div / (RTC_PRESCALER + 1);
+    if (offset_div % (RTC_PRESCALER + 1) != 0)
+      alarm += offset_div < 0 ? 1 : -1;
+
+    if (alarm > cnt && !chVTIsArmedI(&tim_overflow))
+      chVTSetI(&tim_overflow, alarm - cnt, &overflow_handler, &RTCD1);
   }
 
-  // uint32_t next_rollover = offset_seconds + 0x100000000LL / OSAL_ST_FREQUENCY;
-  // static bool overflow_fired;
+  /* RTC alarm within this RTC period? */
+  uint32_t next_rollover = offset_seconds + 0x100000000LL / OSAL_ST_FREQUENCY;
+  if (alarm_set && alarm_time.tv_sec <= next_rollover) {
+    systime_t alarm = cnt + (alarm_time.tv_sec - offset_seconds) * OSAL_ST_FREQUENCY;
+    alarm += offset_div / (RTC_PRESCALER + 1);
+    if (offset_div % (RTC_PRESCALER + 1) != 0)
+      alarm += offset_div < 0 ? 1 : -1;
 
-  // /* Epoch overflow within this RTC period? */
-  // if (next_rollover < offset_seconds) {
-  //   if (RTCD1.callback != NULL && !overflow_fired) {
-  //     uint32_t sec;
-  //     rtcSTM32GetSecMsec(&RTCD1, &sec, NULL);
-  //     if (sec < offset_seconds) {
-  //       overflow_fired = true;
-  //       RTCD1.callback(&RTCD1, RTC_EVENT_OVERFLOW);
-  //     } else if (!st_lld_is_alarm_active() || st_lld_get_alarm() <= st_lld_get_counter()) {
-  //       // _debug("ALR=%x", st_rtc_read_2x16(RTC->ALRH, RTC->ALRL));
-  //       // st_lld_start_alarm(-(int32_t)offset_seconds * OSAL_ST_FREQUENCY);
-  //       // st_lld_set_alarm(0xff00);
-  // // st_rtc_write_2x16(RTC->ALRH, RTC->ALRL, 0xffff);
-  //     // __asm volatile ("nop");
-  //     bool locked = st_rtc_try_lock();
-  //     RTC->ALRH = 2;
-  //     RTC->ALRL = 0;
-  //       _debug("alarm @ %d, cnt=%d", st_lld_get_alarm(), st_lld_get_counter());
-  //     if (locked)
-  //       st_rtc_unlock();
-  // // RTC->CRH |= RTC_CRH_ALRIE;
-  //       // _debug("alarm @ %d, cnt=%d", -(int32_t)offset_seconds * OSAL_ST_FREQUENCY, st_lld_get_counter());
-  //       // _debug("alarm @ %d", st_lld_get_counter() - (int32_t)offset_seconds * OSAL_ST_FREQUENCY);
-  //     }
-  //   }
-  // } else {
-  //   overflow_fired = false;
-  // }
+    if (alarm > cnt && !chVTIsArmedI(&tim_alarm))
+      chVTSetI(&tim_alarm, alarm - cnt, &alarm_handler, &RTCD1);
+  }
 
-  /* Systick alarm and possibly RTC alarm.*/
-  if (flags & RTC_CRL_ALRF) {
-    _debug("alarm irq @ %d", st_lld_get_counter());
-    // if (alarm_armed && st_lld_get_counter() >= alarm_ticks) {
-    //   alarm_armed = false;
-    //   alarm_ticks = 0;
-    //   if (RTCD1.callback != NULL)
-    //     RTCD1.callback(&RTCD1, RTC_EVENT_ALARM);
-    // }
-
-    osalSysLockFromISR();
+  /* Systick alarm.*/
+  if (flags & RTC_CRL_ALRF)
     osalOsTimerHandlerI();
-    osalSysUnlockFromISR();
-  }
 
   /* Systick overflow - adjust RTC offset.*/
   if (flags & RTC_CRL_OWF) {
-    osalSysLockFromISR();
     offset_seconds += 0x100000000LL / OSAL_ST_FREQUENCY;
     offset_div -= (0x100000000LL % OSAL_ST_FREQUENCY) * (RTC_PRESCALER + 1);
     if (offset_div <= -OSAL_ST_FREQUENCY * (RTC_PRESCALER + 1)) {
       offset_seconds++;
       offset_div += OSAL_ST_FREQUENCY * (RTC_PRESCALER + 1);
     }
-    osalSysUnlockFromISR();
   }
+
+  osalSysUnlockFromISR();
 #else
   if (flags & RTC_CRL_SECF)
     RTCD1.callback(&RTCD1, RTC_EVENT_SECOND);
@@ -327,6 +300,8 @@ void rtc_lld_init(void) {
 #if STM32_ST_USE_RTC
   /* We want to avoid locking in ST inline functions. */
   osalDbgAssert(atomic_is_lock_free(&RTC->CRL), "need lock-free atomic access to RTC_CRL");
+
+  chVTObjectInit(&tim_alarm);
 #endif
 
   /* RTC object initialization.*/
@@ -410,51 +385,32 @@ void rtc_lld_set_alarm(RTCDriver *rtcp,
   (void)alarm_number;
 
 #if STM32_ST_USE_RTC
-  (void)rtcp;
-
-  uint32_t next_rollover;
   uint32_t cnt, alarm;
-
-  // /* Disable any previously armed alarm.*/
-  // alarm_ticks = 0;
-  // alarm_armed = false;
-
-  if (alarmspec == NULL) {
-    alarm_time = (RTCAlarm){};
-    return;
-  }
-  alarm_time = *alarmspec;
-
-  if (alarm_time.tv_sec == 0)
-    return;
+  uint32_t sec, msec;
 
   sts = osalSysGetStatusAndLockX();
 
-  next_rollover = offset_seconds + 0x100000000LL / OSAL_ST_FREQUENCY;
+  /* Disable any previously armed alarm.*/
+  chVTResetI(&tim_alarm);
+  alarm_set = false;
 
-  /* If the alarm is after the next RTC rollover, we can't set an alarm yet.*/
-  if (alarm_time.tv_sec > next_rollover)
+  if (alarmspec == NULL)
+    goto out;
+
+  alarm_time = *alarmspec;
+  alarm_set = true;
+
+  rtcSTM32GetSecMsec(rtcp, &sec, &msec);
+
+  /* If the alarm is more than one RTC period in the future, we can't arm it yet.*/
+  if (alarm_time.tv_sec - sec > 0x100000000LL / OSAL_ST_FREQUENCY)
     goto out;
 
   cnt = st_lld_get_counter();
-  alarm = cnt + (alarm_time.tv_sec - offset_seconds) * OSAL_ST_FREQUENCY;
-  if (offset_div > 0)
-    alarm++;
+  alarm = cnt + (alarm_time.tv_sec - sec) * OSAL_ST_FREQUENCY;
+  alarm -= msec * OSAL_ST_FREQUENCY / 1000;
 
-  /* If the alarm is between the next rollover and the first second boundary
-     after it (so the addition overflowed), we can't set an alarm either.*/
-  if (alarm < cnt)
-    goto out;
-
-  // /* Now we know that the alarm must fire within this RTC period.*/
-  // alarm_ticks = alarm;
-  // alarm_armed = true;
-
-  /* If an earlier alarm is already set, don't change it.*/
-  if (st_lld_is_alarm_active() && st_lld_get_alarm() <= alarm)
-    goto out;
-
-  st_lld_start_alarm(alarm);
+  chVTSetI(&tim_alarm, alarm - cnt, &alarm_handler, rtcp);
 
 out:
   osalSysRestoreStatusX(sts);
@@ -657,8 +613,8 @@ void rtcSTM32SetSec(RTCDriver *rtcp, uint32_t tv_sec) {
     div = st_rtc_read_2x16(rtcp->rtc->DIVH, rtcp->rtc->DIVL);
   } while (cnt != st_lld_get_counter() || div != st_rtc_read_2x16(rtcp->rtc->DIVH, rtcp->rtc->DIVL));
 
-  sec = tv_sec - sec / OSAL_ST_FREQUENCY;
-  div += sec % OSAL_ST_FREQUENCY * STM32_RTCCLK;
+  sec = tv_sec - cnt / OSAL_ST_FREQUENCY;
+  div += cnt % OSAL_ST_FREQUENCY * (RTC_PRESCALER + 1);
 
   /* Entering a reentrant critical zone.*/
   sts = osalSysGetStatusAndLockX();
