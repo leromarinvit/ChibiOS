@@ -616,6 +616,9 @@ void rtcSTM32SetSec(RTCDriver *rtcp, uint32_t tv_sec) {
   sec = tv_sec - cnt / OSAL_ST_FREQUENCY;
   div += cnt % OSAL_ST_FREQUENCY * (RTC_PRESCALER + 1);
 
+  if (alarm_set)
+    rtc_lld_set_alarm(rtcp, 0, &alarm_time);
+
   /* Entering a reentrant critical zone.*/
   sts = osalSysGetStatusAndLockX();
 
