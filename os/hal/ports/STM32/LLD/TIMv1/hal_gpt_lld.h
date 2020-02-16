@@ -195,6 +195,15 @@
 #endif
 
 /**
+ * @brief   GPTDST driver enable switch.
+ * @details If set to @p TRUE the support for GPTDST is included.
+ * @note    The default is @p FALSE.
+ */
+#if !defined(STM32_GPT_USE_SYSTICK) || defined(__DOXYGEN__)
+#define STM32_GPT_USE_SYSTICK                 FALSE
+#endif
+
+/**
  * @brief   GPTD1 interrupt priority level setting.
  */
 #if !defined(STM32_GPT_TIM1_IRQ_PRIORITY) || defined(__DOXYGEN__)
@@ -311,6 +320,13 @@
  */
 #if !defined(STM32_GPT_TIM22_IRQ_PRIORITY) || defined(__DOXYGEN__)
 #define STM32_GPT_TIM22_IRQ_PRIORITY        7
+#endif
+
+/**
+ * @brief   GPTDST interrupt priority level setting.
+ */
+#if !defined(STM32_GPT_SYSTICK_IRQ_PRIORITY) || defined(__DOXYGEN__)
+#define STM32_GPT_SYSTICK_IRQ_PRIORITY        7
 #endif
 /** @} */
 
@@ -458,7 +474,8 @@
     !STM32_GPT_USE_TIM12 && !STM32_GPT_USE_TIM14 &&                         \
     !STM32_GPT_USE_TIM15 && !STM32_GPT_USE_TIM16 &&                         \
     !STM32_GPT_USE_TIM17 &&                                                 \
-    !STM32_GPT_USE_TIM21 && !STM32_GPT_USE_TIM22
+    !STM32_GPT_USE_TIM21 && !STM32_GPT_USE_TIM22 &&                         \
+    !STM32_GPT_USE_SYSTICK
 #error "GPT driver activated but no TIM peripheral assigned"
 #endif
 
@@ -599,6 +616,10 @@
 #endif
 #endif
 
+#if STM32_GPT_USE_SYSTICK && OSAL_ST_MODE == OSAL_ST_MODE_PERIODIC
+#error "GPTST requires SYSTICK but the timer is already used for ST"
+#endif
+
 /* IRQ priority checks.*/
 #if STM32_GPT_USE_TIM1 && !defined(STM32_TIM1_SUPPRESS_ISR) &&              \
     !OSAL_IRQ_IS_VALID_PRIORITY(STM32_GPT_TIM1_IRQ_PRIORITY)
@@ -680,9 +701,9 @@
 #error "Invalid IRQ priority assigned to TIM21"
 #endif
 
-#if STM32_GPT_USE_TIM22 && !defined(STM32_TIM22_SUPPRESS_ISR) &&            \
-    !OSAL_IRQ_IS_VALID_PRIORITY(STM32_GPT_TIM22_IRQ_PRIORITY)
-#error "Invalid IRQ priority assigned to TIM22"
+#if STM32_GPT_USE_SYSTICK && !defined(STM32_SYSTICK_SUPPRESS_ISR) &&        \
+    !OSAL_IRQ_IS_VALID_PRIORITY(STM32_GPT_SYSTICK_IRQ_PRIORITY)
+#error "Invalid IRQ priority assigned to SYSTICK"
 #endif
 
 /*===========================================================================*/
@@ -758,49 +779,6 @@ struct GPTDriver {
 };
 
 /*===========================================================================*/
-/* Driver macros.                                                            */
-/*===========================================================================*/
-
-/**
- * @brief   Changes the interval of GPT peripheral.
- * @details This function changes the interval of a running GPT unit.
- * @pre     The GPT unit must be running in continuous mode.
- * @post    The GPT unit interval is changed to the new value.
- * @note    The function has effect at the next cycle start.
- *
- * @param[in] gptp      pointer to a @p GPTDriver object
- * @param[in] interval  new cycle time in timer ticks
- *
- * @notapi
- */
-#define gpt_lld_change_interval(gptp, interval)                             \
-  ((gptp)->tim->ARR = (uint32_t)((interval) - 1U))
-
-/**
- * @brief   Returns the interval of GPT peripheral.
- * @pre     The GPT unit must be running in continuous mode.
- *
- * @param[in] gptp      pointer to a @p GPTDriver object
- * @return              The current interval.
- *
- * @notapi
- */
-#define gpt_lld_get_interval(gptp) ((gptcnt_t)((gptp)->tim->ARR + 1U))
-
-/**
- * @brief   Returns the counter value of GPT peripheral.
- * @pre     The GPT unit must be running in continuous mode.
- * @note    The nature of the counter is not defined, it may count upward
- *          or downward, it could be continuously running or not.
- *
- * @param[in] gptp      pointer to a @p GPTDriver object
- * @return              The current counter value.
- *
- * @notapi
- */
-#define gpt_lld_get_counter(gptp) ((gptcnt_t)(gptp)->tim->CNT)
-
-/*===========================================================================*/
 /* External declarations.                                                    */
 /*===========================================================================*/
 
@@ -871,6 +849,72 @@ extern GPTDriver GPTD21;
 #if STM32_GPT_USE_TIM22 && !defined(__DOXYGEN__)
 extern GPTDriver GPTD22;
 #endif
+
+#if STM32_GPT_USE_SYSTICK && !defined(__DOXYGEN__)
+extern GPTDriver GPTDST;
+#endif
+
+/*===========================================================================*/
+/* Driver inline functions.                                                            */
+/*===========================================================================*/
+
+/**
+ * @brief   Changes the interval of GPT peripheral.
+ * @details This function changes the interval of a running GPT unit.
+ * @pre     The GPT unit must be running in continuous mode.
+ * @post    The GPT unit interval is changed to the new value.
+ * @note    The function has effect at the next cycle start.
+ *
+ * @param[in] gptp      pointer to a @p GPTDriver object
+ * @param[in] interval  new cycle time in timer ticks
+ *
+ * @notapi
+ */
+static inline void gpt_lld_change_interval(const GPTDriver *gptp,
+                                           gptcnt_t interval) {
+#if STM32_GPT_USE_SYSTICK
+  if (&GPTDST == gptp)
+    SysTick->LOAD = (interval - 1U) & SysTick_LOAD_RELOAD_Msk;
+  else
+#endif
+    gptp->tim->ARR = interval - 1U;
+}
+
+/**
+ * @brief   Returns the interval of GPT peripheral.
+ * @pre     The GPT unit must be running in continuous mode.
+ *
+ * @param[in] gptp      pointer to a @p GPTDriver object
+ * @return              The current interval.
+ *
+ * @notapi
+ */
+static inline gptcnt_t gpt_lld_get_interval(const GPTDriver *gptp) {
+#if STM32_GPT_USE_SYSTICK
+  if (&GPTDST == gptp)
+    return SysTick->LOAD;
+#endif
+  return gptp->tim->ARR + 1U;
+}
+
+/**
+ * @brief   Returns the counter value of GPT peripheral.
+ * @pre     The GPT unit must be running in continuous mode.
+ * @note    The nature of the counter is not defined, it may count upward
+ *          or downward, it could be continuously running or not.
+ *
+ * @param[in] gptp      pointer to a @p GPTDriver object
+ * @return              The current counter value.
+ *
+ * @notapi
+ */
+static inline gptcnt_t gpt_lld_get_counter(const GPTDriver *gptp) {
+#if STM32_GPT_USE_SYSTICK
+  if (&GPTDST == gptp)
+    return SysTick->VAL;
+#endif
+  return gptp->tim->CNT;
+}
 
 #ifdef __cplusplus
 extern "C" {

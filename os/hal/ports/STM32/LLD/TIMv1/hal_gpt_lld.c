@@ -30,6 +30,14 @@
 /* Driver local definitions.                                                 */
 /*===========================================================================*/
 
+#if STM32_GPT_USE_SYSTICK
+#if defined(STM32_CORE_CK)
+#define SYSTICK_CK                          STM32_CORE_CK
+#else
+#define SYSTICK_CK                          STM32_HCLK
+#endif
+#endif
+
 /*===========================================================================*/
 /* Driver exported variables.                                                */
 /*===========================================================================*/
@@ -168,6 +176,14 @@ GPTDriver GPTD21;
  */
 #if STM32_GPT_USE_TIM22 || defined(__DOXYGEN__)
 GPTDriver GPTD22;
+#endif
+
+/**
+ * @brief   GPTDST driver identifier.
+ * @note    The driver GPTDST allocates the SysTick timer when enabled.
+ */
+#if STM32_GPT_USE_SYSTICK || defined(__DOXYGEN__)
+GPTDriver GPTDST;
 #endif
 
 /*===========================================================================*/
@@ -494,6 +510,22 @@ OSAL_IRQ_HANDLER(STM32_TIM22_HANDLER) {
 #endif /* !defined(STM32_TIM22_SUPPRESS_ISR) */
 #endif /* STM32_GPT_USE_TIM22 */
 
+#if STM32_GPT_USE_SYSTICK || defined(__DOXYGEN__)
+/**
+ * @brief   SysTick interrupt handler.
+ *
+ * @isr
+ */
+OSAL_IRQ_HANDLER(SysTick_Handler) {
+
+  OSAL_IRQ_PROLOGUE();
+
+  gpt_lld_serve_interrupt(&GPTDST);
+
+  OSAL_IRQ_EPILOGUE();
+}
+#endif /* STM32_GPT_USE_SYSTICK */
+
 /*===========================================================================*/
 /* Driver exported functions.                                                */
 /*===========================================================================*/
@@ -605,6 +637,11 @@ void gpt_lld_init(void) {
   /* Driver initialization.*/
   GPTD22.tim = STM32_TIM22;
   gptObjectInit(&GPTD22);
+#endif
+
+#if STM32_GPT_USE_SYSTICK
+  /* Driver initialization.*/
+  gptObjectInit(&GPTDST);
 #endif
 }
 
@@ -877,7 +914,26 @@ void gpt_lld_start(GPTDriver *gptp) {
 #endif
     }
 #endif
+
+#if STM32_GPT_USE_SYSTICK
+    if (&GPTDST == gptp) {
+      nvicSetSystemHandlerPriority(HANDLER_SYSTICK, STM32_GPT_SYSTICK_IRQ_PRIORITY);
+      osalDbgAssert(gptp->config->frequency == SYSTICK_CK ||
+                    gptp->config->frequency == SYSTICK_CK / 8, "invalid frequency");
+      gptp->clock = gptp->config->frequency;
+    }
+#endif
   }
+
+#if STM32_GPT_USE_SYSTICK
+  if (&GPTDST == gptp) {
+    uint32_t ctrl = SysTick_CTRL_ENABLE_Msk;
+    if (gptp->clock == SYSTICK_CK)
+      ctrl |= SysTick_CTRL_CLKSOURCE_Msk;
+    SysTick->CTRL = ctrl;
+    return;
+  }
+#endif
 
   /* Prescaler value calculation.*/
   psc = (uint16_t)((gptp->clock / gptp->config->frequency) - 1);
@@ -903,6 +959,12 @@ void gpt_lld_start(GPTDriver *gptp) {
 void gpt_lld_stop(GPTDriver *gptp) {
 
   if (gptp->state == GPT_READY) {
+#if STM32_GPT_USE_SYSTICK
+    if (&GPTDST == gptp) {
+      SysTick->CTRL = 0;
+      return;
+    }
+#endif
     gptp->tim->CR1  = 0;                        /* Timer disabled.          */
     gptp->tim->DIER = 0;                        /* All IRQs disabled.       */
     gptp->tim->SR   = 0;                        /* Clear pending IRQs.      */
@@ -1063,6 +1125,18 @@ void gpt_lld_stop(GPTDriver *gptp) {
  */
 void gpt_lld_start_timer(GPTDriver *gptp, gptcnt_t interval) {
 
+#if STM32_GPT_USE_SYSTICK
+  if (&GPTDST == gptp) {
+    osalDbgAssert(interval - 1 <= SysTick_LOAD_RELOAD_Msk,
+                  "interval out of range");
+    SysTick->LOAD = (uint32_t)(interval - 1U);
+    SysTick->VAL = 0;
+    (void)SysTick->CTRL;                        /* Clear COUNTFLAG.         */
+    SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk;
+    return;
+  }
+#endif
+
   gptp->tim->ARR = (uint32_t)(interval - 1U);   /* Time constant.           */
   gptp->tim->EGR = STM32_TIM_EGR_UG;            /* Update event.            */
   gptp->tim->CNT = 0;                           /* Reset counter.           */
@@ -1085,6 +1159,13 @@ void gpt_lld_start_timer(GPTDriver *gptp, gptcnt_t interval) {
  */
 void gpt_lld_stop_timer(GPTDriver *gptp) {
 
+#if STM32_GPT_USE_SYSTICK
+  if (&GPTDST == gptp) {
+    SysTick->CTRL &= ~SysTick_CTRL_TICKINT_Msk;
+    return;
+  }
+#endif
+
   gptp->tim->CR1 = 0;                           /* Initially stopped.       */
   gptp->tim->SR = 0;                            /* Clear pending IRQs.      */
 
@@ -1105,6 +1186,20 @@ void gpt_lld_stop_timer(GPTDriver *gptp) {
  */
 void gpt_lld_polled_delay(GPTDriver *gptp, gptcnt_t interval) {
 
+#if STM32_GPT_USE_SYSTICK
+  if (&GPTDST == gptp) {
+    osalDbgAssert(interval - 1 <= SysTick_LOAD_RELOAD_Msk,
+                  "interval out of range");
+    SysTick->LOAD = (uint32_t)(interval - 1U);
+    SysTick->VAL = 0;
+    (void)SysTick->CTRL;                        /* Clear COUNTFLAG.         */
+    while (!(SysTick->CTRL & SysTick_CTRL_COUNTFLAG_Msk))
+      ;
+    (void)SysTick->CTRL;                        /* Clear COUNTFLAG.         */
+    return;
+  }
+#endif
+
   gptp->tim->ARR = (uint32_t)(interval - 1U);   /* Time constant.           */
   gptp->tim->EGR = STM32_TIM_EGR_UG;            /* Update event.            */
   gptp->tim->SR  = 0;                           /* Clear pending IRQs.      */
@@ -1123,7 +1218,10 @@ void gpt_lld_polled_delay(GPTDriver *gptp, gptcnt_t interval) {
  */
 void gpt_lld_serve_interrupt(GPTDriver *gptp) {
 
-  gptp->tim->SR = 0;
+#if STM32_GPT_USE_SYSTICK
+  if (&GPTDST != gptp)
+#endif
+    gptp->tim->SR = 0;
   if (gptp->state == GPT_ONESHOT) {
     gptp->state = GPT_READY;                /* Back in GPT_READY state.     */
     gpt_lld_stop_timer(gptp);               /* Timer automatically stopped. */
