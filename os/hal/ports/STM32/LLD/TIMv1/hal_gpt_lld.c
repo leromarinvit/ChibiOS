@@ -1127,7 +1127,7 @@ void gpt_lld_start_timer(GPTDriver *gptp, gptcnt_t interval) {
 
 #if STM32_GPT_USE_SYSTICK
   if (&GPTDST == gptp) {
-    osalDbgAssert(interval - 1 <= SysTick_LOAD_RELOAD_Msk,
+    osalDbgAssert(((interval - 1) & SysTick_LOAD_RELOAD_Msk) > 0,
                   "interval out of range");
     SysTick->LOAD = (uint32_t)(interval - 1U);
     SysTick->VAL = 0;
