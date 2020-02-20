@@ -1132,6 +1132,7 @@ void gpt_lld_start_timer(GPTDriver *gptp, gptcnt_t interval) {
     SysTick->LOAD = (uint32_t)(interval - 1U);
     SysTick->VAL = 0;
     (void)SysTick->CTRL;                        /* Clear COUNTFLAG.         */
+    SCB->ICSR |= SCB_ICSR_PENDSTCLR_Msk;        /* Clear pending IRQs.      */
     SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk;
     return;
   }
